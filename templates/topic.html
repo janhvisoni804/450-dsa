@@ -41,6 +41,9 @@
 .btn-busy::before { content: ""; width: 12px; height: 12px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; display: inline-block; animation: topic-spin 0.7s linear infinite; }
 .row-updating { opacity: 0.55; }
 
+/* Custom theme alignment styles for confidence toggle element */
+.confidence-dropdown-toggle { font-size: 0.78rem !important; font-weight: 600 !important; padding: 4px 10px !important; border-radius: 6px !important; border: 1px solid var(--border-color) !important; background-color: var(--bg-secondary) !important; color: var(--text-secondary) !important; }
+
 @keyframes topic-spin {
     to { transform: rotate(360deg); }
 }
@@ -89,7 +92,6 @@
     {% endif %}
 </div>
 
-<!-- Filter Buttons with ARIA labels -->
 <div class="filter-buttons" role="group" aria-label="Filter questions by difficulty level">
     <button class="filter-btn ui-btn ui-btn-secondary ui-btn-pill {% if difficulty_filter == 'all' %}active{% endif %}" data-difficulty="all" aria-pressed="{% if difficulty_filter == 'all' %}true{% else %}false{% endif %}">
         📋 All ({{ total_count }})
@@ -104,7 +106,6 @@
         🔴 Hard ({{ hard_count }})
     </button>
 </div>
-<!-- Practice Random Button -->
 <div style="margin-bottom: 16px;">
     <button id="practiceRandomBtn" type="button" class="filter-btn ui-btn ui-btn-primary ui-btn-pill">
         🎲 Practice Random
@@ -154,6 +155,27 @@
                         data-id="{{ q_id_str }}"
                         aria-label="Mark '{{ q.problem }}' as {% if p and p.done %}incomplete{% else %}complete{% endif %}"
                         {% if p and p.done %}checked{% endif %}>
+                    
+                    <div class="btn-group ms-2">
+                        <button type="button" class="dropdown-toggle confidence-dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" id="conf-btn-{{ q_id_str }}">
+                            {% if p and p.confidence == 'high' %}
+                                🟢 High
+                            {% elif p and p.confidence == 'medium' %}
+                                🟡 Medium
+                            {% elif p and p.confidence == 'low' %}
+                                🔴 Low
+                            {% else %}
+                                ⚪ Confidence
+                            {% endif %}
+                        </button>
+                        <ul class="dropdown-menu shadow">
+                            <li><a class="dropdown-item confidence-select" href="#" data-question-id="{{ q_id_str }}" data-level="high">🟢 High</a></li>
+                            <li><a class="dropdown-item confidence-select" href="#" data-question-id="{{ q_id_str }}" data-level="medium">🟡 Medium</a></li>
+                            <li><a class="dropdown-item confidence-select" href="#" data-question-id="{{ q_id_str }}" data-level="low">🔴 Low</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><a class="dropdown-item confidence-select text-danger" href="#" data-question-id="{{ q_id_str }}" data-level="">Clear Confidence</a></li>
+                        </ul>
+                    </div>
                 </td>
                 <td>
                     <div class="q-name">{{ q.problem }}</div>
@@ -174,13 +196,15 @@
                                <i class="bi bi-box-arrow-up-right" aria-hidden="true"></i> {{ p2 }}
                             </a>
                         {% endif %}
-                        {% for editorial in q.editorial_links %}
-                            <a href="{{ editorial.url }}" target="_blank" rel="noopener noreferrer"
-                               class="q-badge badge-link"
-                               aria-label="Read {{ editorial.label }} (opens in new tab)">
-                               <i class="bi bi-journal-text" aria-hidden="true"></i> {{ editorial.label }}
-                            </a>
-                        {% endfor %}
+                        {% if q.editorial_links %}
+                            {% for editorial in q.editorial_links %}
+                                <a href="{{ editorial.url }}" target="_blank" rel="noopener noreferrer"
+                                   class="q-badge badge-link"
+                                   aria-label="Read {{ editorial.label }} (opens in new tab)">
+                                   <i class="bi bi-journal-text" aria-hidden="true"></i> {{ editorial.label }}
+                                </a>
+                            {% endfor %}
+                        {% endif %}
                     </div>
                 </td>
                 <td>
@@ -231,7 +255,6 @@
 </div>
 </div>
 
-<!-- Notes Modal -->
 {{ notes_modal(textarea_label='Notes for this question') }}
 {% endblock %}
 
@@ -260,12 +283,6 @@ function setBookmarkState(btn, isBookmarked) {
     icon.className = isBookmarked ? 'bi bi-bookmark-fill' : 'bi bi-bookmark';
 }
 
-/* Offline Progress Queue
-   Queues done / bookmark / notes changes in localStorage when the
-   user is offline and flushes them automatically on reconnection.
-   Conflicts are resolved with last-write-wins using a timestamp so
-   the most recent action always takes precedence.
-*/
 const QUEUE_KEY = 'offlineProgressQueue';
 
 function readQueue() {
@@ -275,12 +292,11 @@ function readQueue() {
 
 function writeQueue(q) {
     try { localStorage.setItem(QUEUE_KEY, JSON.stringify(q)); }
-    catch { /* storage full; skip queue persistence */ }
+    catch { }
 }
 
 function enqueue(id, data) {
     const queue = readQueue();
-    // Merge into existing entry for same question (last-write-wins per field)
     const idx = queue.findIndex(e => e.id === id);
     const entry = idx >= 0 ? queue[idx] : { id, data: {}, ts: 0 };
     entry.data = { ...entry.data, ...data };
@@ -331,10 +347,9 @@ async function flushQueue() {
             });
             if (r.ok) {
                 const res = await r.json();
-                if (res.success) dequeue(entry.id);
+                if (res.success || res.status === 'success') dequeue(entry.id);
             }
         } catch {
-            // Still offline; leave the queue intact and stop trying.
             break;
         }
     }
@@ -350,7 +365,6 @@ function updateQuestion(id, data, callback) {
     if (!navigator.onLine) {
         enqueue(id, data);
         showOfflineBanner(true);
-        // Optimistic success so UI updates immediately
         if (callback) callback({ success: true, offline: true });
         return Promise.resolve({ success: true, offline: true });
     }
@@ -363,21 +377,20 @@ function updateQuestion(id, data, callback) {
         if (!r.ok) throw new Error('Request failed');
         return r.json();
     }).then(res => {
+        if (res.status === 'success' || res.confidence !== undefined) res.success = true; 
         if (!res.success) throw new Error(res.error || 'Update failed');
         if (callback) callback(res);
         return res;
     }).catch(err => {
-        // Network error even though navigator.onLine was true (e.g. flaky connection)
         enqueue(id, data);
         showOfflineBanner(true);
         throw err;
     });
 }
 
-// Flush any queued changes left from a previous session
 if (navigator.onLine) flushQueue();
 
-// Update the checkbox event listener
+// Checkbox handler
 document.querySelectorAll('.status-checkbox').forEach(cb => {
     cb.addEventListener('change', function() {
         if (!isAuthenticated) { 
@@ -391,7 +404,6 @@ document.querySelectorAll('.status-checkbox').forEach(cb => {
         this.disabled = true;
         row.classList.add('row-updating');
         
-        // Update ARIA label
         const problemName = row.querySelector('.q-name')?.textContent || 'Question';
         this.setAttribute('aria-label', nextChecked ? `Mark '${problemName}' as incomplete` : `Mark '${problemName}' as complete`);
         
@@ -406,6 +418,36 @@ document.querySelectorAll('.status-checkbox').forEach(cb => {
                 this.disabled = false;
                 row.classList.remove('row-updating');
             });
+    });
+});
+
+// UPGRADED & INTEGRATED CONFIDENCE DROPDOWN HANDLER
+document.querySelectorAll('.confidence-select').forEach(item => {
+    item.addEventListener('click', function(e) {
+        e.preventDefault();
+        if (!isAuthenticated) { 
+            window.location.href = "{{ url_for('auth.login') }}"; 
+            return; 
+        }
+        const questionId = this.getAttribute('data-question-id');
+        const level = this.getAttribute('data-level');
+        const button = document.getElementById(`conf-btn-${questionId}`);
+        const originalHTML = button.innerHTML;
+
+        // Snappy UI Toggle Instantly
+        if (level === 'high') button.innerHTML = '🟢 High';
+        else if (level === 'medium') button.innerHTML = '🟡 Medium';
+        else if (level === 'low') button.innerHTML = '🔴 Low';
+        else button.innerHTML = '⚪ Confidence';
+
+        // Connect natively to the application cache lifecycle engine
+        updateQuestion(questionId, { confidence: level }, (res) => {
+            dequeue(questionId);
+            showOfflineBanner(false);
+        }).catch(() => {
+            button.innerHTML = originalHTML;
+            showUpdateError('Unable to update confidence level.');
+        });
     });
 });
 
@@ -474,7 +516,6 @@ document.querySelectorAll('.skip-btn').forEach(btn => {
     });
 });
 
-// Difficulty Filtering
 document.querySelectorAll('.filter-btn[data-difficulty]').forEach(btn => {
     btn.addEventListener('click', function() {
         const difficulty = this.dataset.difficulty;
@@ -486,6 +527,7 @@ document.querySelectorAll('.filter-btn[data-difficulty]').forEach(btn => {
         window.location.href = currentUrl.toString();
     });
 });
+
 document.querySelectorAll('.filter-btn[data-status]').forEach(btn => {
     btn.addEventListener('click', function() {
         const status = this.dataset.status;
@@ -497,6 +539,7 @@ document.querySelectorAll('.filter-btn[data-status]').forEach(btn => {
         window.location.href = currentUrl.toString();
     });
 });
+
 (function() {
     const rows = document.querySelectorAll('#questions-table tbody tr:not(#empty-state-row)');
     const emptyRow = document.getElementById('empty-state-row');
@@ -505,7 +548,6 @@ document.querySelectorAll('.filter-btn[data-status]').forEach(btn => {
     }
 })();
 
-// Notes Modal with focus trap
 const modal = document.getElementById('notesModal');
 const FOCUSABLE = 'button, [href], input, textarea, select, [tabindex]:not([tabindex="-1"])';
 
@@ -515,7 +557,6 @@ function openModal(triggerEl) {
     const focusable = modal.querySelectorAll(FOCUSABLE);
     if (focusable.length) focusable[0].focus();
     modal.addEventListener('keydown', trapFocus);
-    // Announce modal open to screen readers
     const modalTitle = document.getElementById('notesModalTitle');
     if (modalTitle) {
         modalTitle.setAttribute('aria-live', 'polite');
@@ -573,7 +614,7 @@ document.getElementById('saveNotesBtn').addEventListener('click', function() {
         this.innerHTML = previousContent;
     });
 });
-//  Practice Random Button
+
 document.getElementById('practiceRandomBtn').addEventListener('click', function() {
     this.classList.add('btn-busy');
     this.setAttribute('aria-busy', 'true');
@@ -596,6 +637,5 @@ document.getElementById('practiceRandomBtn').addEventListener('click', function(
         this.removeAttribute('aria-busy');
     }, 2000);
 });
-
 </script>
 {% endblock %}

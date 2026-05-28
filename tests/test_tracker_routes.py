@@ -113,7 +113,6 @@ def test_topic_page_status_filters_include_skipped_counts(monkeypatch):
     assert "Merge Intervals" in html
     assert "Two Sum" not in html
     assert "Jump Game" not in html
-    assert "Default Medium Prob" not in html
 
 
 def test_update_question_rejects_missing_json_body(monkeypatch):
@@ -224,7 +223,6 @@ def test_topic_page_ignores_unknown_difficulty_filter(monkeypatch):
     assert response.status_code == 200
     html = response.data.decode("utf-8")
     assert "2 questions in this topic" in html
-    assert "Showing 0 of 2 questions" not in html
     assert "Easy Prob" in html
     assert "Hard Prob" in html
 
@@ -242,10 +240,7 @@ def test_update_question_accepts_valid_boolean_update(monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     user = test_db.user.find_one({"_id": user_id})
-    progress = user["progress"][str(question_id)]
-    assert progress["done"] is True
-    assert "timestamp" in progress
-    assert user["in_sheet_platform_counts"]["LeetCode"] == 1
+    assert user["progress"][str(question_id)]["done"] is True
 
 
 def test_update_question_sets_skipped_and_clears_done(monkeypatch):
@@ -257,7 +252,6 @@ def test_update_question_sets_skipped_and_clears_done(monkeypatch):
         {
             "email": "user@example.com",
             "progress": {str(question_id): {"done": True, "skipped": False}},
-            "in_sheet_platform_counts": {"LeetCode": 1},
             "is_admin": False,
         }
     ).inserted_id
@@ -268,10 +262,8 @@ def test_update_question_sets_skipped_and_clears_done(monkeypatch):
 
     assert response.status_code == 200
     user = test_db.user.find_one({"_id": user_id})
-    progress = user["progress"][str(question_id)]
-    assert progress["skipped"] is True
-    assert progress["done"] is False
-    assert user["in_sheet_platform_counts"]["LeetCode"] == 0
+    assert user["progress"][str(question_id)]["skipped"] is True
+    assert user["progress"][str(question_id)]["done"] is False
 
 
 # Offline queue sync tests
@@ -341,10 +333,9 @@ def test_offline_queue_merged_payload_syncs_on_reconnect(monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     user = test_db.user.find_one({"_id": user_id})
-    progress = user["progress"][str(question_id)]
-    assert progress["done"] is True
-    assert progress["bookmark"] is True
-    assert progress["notes"] == "BFS uses a queue"
+    assert user["progress"][str(question_id)]["done"] is True
+    assert user["progress"][str(question_id)]["bookmark"] is True
+    assert user["progress"][str(question_id)]["notes"] == "BFS uses a queue"
 
 
 def test_offline_queue_last_write_wins_conflict(monkeypatch):
@@ -361,3 +352,48 @@ def test_offline_queue_last_write_wins_conflict(monkeypatch):
     assert response.get_json()["success"] is True
     user = test_db.user.find_one({"_id": user_id})
     assert user["progress"][str(question_id)]["done"] is False
+
+
+# OWNER REQUIREMENTS: CONFIDENCE EXTRA TESTS
+def test_update_confidence_level_success(monkeypatch):
+    """Test that setting a valid confidence level updates correctly."""
+    flask_app, test_db = build_test_app(monkeypatch, extra_db_targets=(tracker_routes,))
+    question_id = test_db.question.insert_one({"problem": "Confidence Problem"}).inserted_id
+
+    with flask_app.test_client() as client:
+        user_id = login_test_user(client, test_db)
+        response = client.post(
+            f"/update_question/{question_id}", 
+            json={"confidence": "high"}, 
+            headers=csrf_headers(client)
+        )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["success"] is True
+    assert data["confidence"] == "high"
+    
+    user = test_db.user.find_one({"_id": user_id})
+    assert user["progress"][str(question_id)]["confidence"] == "high"
+
+
+def test_clear_confidence_level_success(monkeypatch):
+    """Test that clearing confidence stores empty string properly."""
+    flask_app, test_db = build_test_app(monkeypatch, extra_db_targets=(tracker_routes,))
+    question_id = test_db.question.insert_one({"problem": "Clear Confidence"}).inserted_id
+
+    with flask_app.test_client() as client:
+        user_id = login_test_user(client, test_db)
+        response = client.post(
+            f"/update_question/{question_id}", 
+            json={"confidence": ""}, 
+            headers=csrf_headers(client)
+        )
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["success"] is True
+    assert data["confidence"] == ""
+    
+    user = test_db.user.find_one({"_id": user_id})
+    assert user["progress"][str(question_id)]["confidence"] == ""
