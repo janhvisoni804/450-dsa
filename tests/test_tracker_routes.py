@@ -240,7 +240,10 @@ def test_update_question_accepts_valid_boolean_update(monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     user = test_db.user.find_one({"_id": user_id})
-    assert user["progress"][str(question_id)]["done"] is True
+    progress = user["progress"][str(question_id)]
+    assert progress["done"] is True
+    assert "timestamp" in progress
+    assert user["in_sheet_platform_counts"]["LeetCode"] == 1
 
 
 def test_update_question_sets_skipped_and_clears_done(monkeypatch):
@@ -252,6 +255,7 @@ def test_update_question_sets_skipped_and_clears_done(monkeypatch):
         {
             "email": "user@example.com",
             "progress": {str(question_id): {"done": True, "skipped": False}},
+            "in_sheet_platform_counts": {"LeetCode": 1},
             "is_admin": False,
         }
     ).inserted_id
@@ -262,8 +266,10 @@ def test_update_question_sets_skipped_and_clears_done(monkeypatch):
 
     assert response.status_code == 200
     user = test_db.user.find_one({"_id": user_id})
-    assert user["progress"][str(question_id)]["skipped"] is True
-    assert user["progress"][str(question_id)]["done"] is False
+    progress = user["progress"][str(question_id)]
+    assert progress["skipped"] is True
+    assert progress["done"] is False
+    assert user["in_sheet_platform_counts"]["LeetCode"] == 0
 
 
 # Offline queue sync tests
@@ -333,9 +339,10 @@ def test_offline_queue_merged_payload_syncs_on_reconnect(monkeypatch):
     assert response.status_code == 200
     assert response.get_json()["success"] is True
     user = test_db.user.find_one({"_id": user_id})
-    assert user["progress"][str(question_id)]["done"] is True
-    assert user["progress"][str(question_id)]["bookmark"] is True
-    assert user["progress"][str(question_id)]["notes"] == "BFS uses a queue"
+    progress = user["progress"][str(question_id)]
+    assert progress["done"] is True
+    assert progress["bookmark"] is True
+    assert progress["notes"] == "BFS uses a queue"
 
 
 def test_offline_queue_last_write_wins_conflict(monkeypatch):
@@ -354,11 +361,11 @@ def test_offline_queue_last_write_wins_conflict(monkeypatch):
     assert user["progress"][str(question_id)]["done"] is False
 
 
-# OWNER REQUIREMENTS: CONFIDENCE EXTRA TESTS
+# 🟢 EXTRA FEATURE EVALUATION ASSERTIONS (Confidence Setup Matrix)
 def test_update_confidence_level_success(monkeypatch):
-    """Test that setting a valid confidence level updates correctly."""
+    """Test that setting a valid confidence level stores correctly inside progress wrapper."""
     flask_app, test_db = build_test_app(monkeypatch, extra_db_targets=(tracker_routes,))
-    question_id = test_db.question.insert_one({"problem": "Confidence Problem"}).inserted_id
+    question_id = test_db.question.insert_one({"problem": "Confidence Handling"}).inserted_id
 
     with flask_app.test_client() as client:
         user_id = login_test_user(client, test_db)
@@ -378,9 +385,9 @@ def test_update_confidence_level_success(monkeypatch):
 
 
 def test_clear_confidence_level_success(monkeypatch):
-    """Test that clearing confidence stores empty string properly."""
+    """Test that clearing a confidence level saves empty string properly."""
     flask_app, test_db = build_test_app(monkeypatch, extra_db_targets=(tracker_routes,))
-    question_id = test_db.question.insert_one({"problem": "Clear Confidence"}).inserted_id
+    question_id = test_db.question.insert_one({"problem": "Clear Confidence Track"}).inserted_id
 
     with flask_app.test_client() as client:
         user_id = login_test_user(client, test_db)

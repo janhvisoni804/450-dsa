@@ -188,67 +188,115 @@ def export_topic_notes(topic_id):
     return response
 
 
-@tracker_bp.route('/update_question/<string:question_id>', methods=['POST'])
+@tracker_bp.route("/update_question/<question_id>", methods=["POST"])
 @login_required
 def update_question(question_id):
-    # Strict Parsing: Catch malformed JSON safely before it turns into NoneType
     try:
-        if request.is_json:
-            data = request.get_json()
-        else:
-            data = request.form if request.form else None
-    except Exception:
-        data = None
+        question_id_obj = ObjectId(question_id)
+    except InvalidId:
+        return json_error("Question not found", status_code=404)
+    question = db.question.find_one({"_id": question_id_obj}, QUESTION_STATUS_PROJECTION)
+    if not question:
+        return json_error("Question not found", status_code=404)
 
-    # Explicit check for missing or invalid data body matching test suites exactly
-    if data is None or not isinstance(data, dict):
+    data = request.get_json(silent=True)
+    if not isinstance(data, dict):
         return jsonify({"success": False, "error": "Request body must be a JSON object"}), 400
 
-    # Validate boolean parameters
-    for flag in ['done', 'skipped', 'bookmark']:
-        if flag in data and not isinstance(data[flag], bool):
-            return jsonify({"success": False, "error": f"{flag} must be a boolean"}), 400
+    for field in ("done", "bookmark", "skipped"):
+        if field in data and not isinstance(data[field], bool):
+            return jsonify({"success": False, "error": f"{field} must be a boolean"}), 400
 
     user_id = current_user.id
-    user_doc = db.user.find_one({"_id": user_id})
+    update_fields = {}
+    progress = current_user.progress
+    existing = progress.get(question_id, {})
+    message = ""
+    platform_count_field = f"in_sheet_platform_counts.{platform_from_question_url(question.get('url'))}"
+
+    if "done" in data:
+        if data["done"] and not existing.get("done"):
+            update_fields[f"progress.{question_id}.timestamp"] = utc_now()
+            message = f"✅ Marked '{question.get('problem', 'Question')}' as complete!"
+            update_fields[f"progress.{question_id}.skipped"] = False
+            update_fields[platform_count_field] = 1
+        elif not data["done"] and existing.get("done"):
+            message = f"📝 Marked '{question.get('problem', 'Question')}' as incomplete"
+        if not data["done"] and existing.get("done"):
+            update_fields[platform_count_field] = -1
+        update_fields[f"progress.{question_id}.done"] = data["done"]
+
+    if "skipped" in data:
+        if data["skipped"] and not existing.get("skipped"):
+            message = f"⏭️ Marked '{question.get('problem', 'Question')}' as skipped for now"
+            update_fields[f"progress.{question_id}.done"] = False
+            if existing.get("done"):
+                update_fields[platform_count_field] = -1
+        elif not data["skipped"] and existing.get("skipped"):
+            message = f"↩️ Removed skipped status for '{question.get('problem', 'Question')}'"
+        update_fields[f"progress.{question_id}.skipped"] = data["skipped"]
     
-    progress = user_doc.get("progress", {}) if user_doc else {}
-    if not isinstance(progress, dict):
-        progress = {}
+    if "bookmark" in data:
+        if data["bookmark"] and not existing.get("bookmark"):
+            message = f"🔖 Added '{question.get('problem', 'Question')}' to bookmarks!"
+        elif not data["bookmark"] and existing.get("bookmark"):
+            message = f"📌 Removed '{question.get('problem', 'Question')}' from bookmarks"
+        update_fields[f"progress.{question_id}.bookmark"] = data["bookmark"]
+    
+    if "notes" in data:
+        update_fields[f"progress.{question_id}.notes"] = data["notes"]
+        message = f"📝 Notes saved for '{question.get('problem', 'Question')}'!"
 
-    q_str = str(question_id)
-    if q_str not in progress:
-        progress[q_str] = {"done": False, "skipped": False, "bookmark": False, "notes": "", "confidence": ""}
+    # 🟢 LAYERED EXTRA FEATURE: Confidence evaluation framework
+    if "confidence" in data:
+        conf_val = str(data["confidence"]).strip().lower()
+        if conf_val in ["low", "medium", "high"]:
+            update_fields[f"progress.{question_id}.confidence"] = conf_val
+            message = f"🟢 Confidence level updated to {conf_val}!"
+        else:
+            update_fields[f"progress.{question_id}.confidence"] = ""
+            message = "⚪ Confidence level cleared!"
 
-    # 🔄 MUTUAL EXCLUSION LOGIC (Critical Bug Fix)
-    if 'done' in data:
-        progress[q_str]['done'] = data['done']
-        if data['done']:
-            progress[q_str]['skipped'] = False  # If done, it can't be skipped
+    # 🟢 LAYERED EXTRA FEATURE: Safely inject confidence string data into MongoDB $set operation
+    if "confidence" in data:
+        conf_val = str(data["confidence"]).strip().lower()
+        if conf_val in ["low", "medium", "high"]:
+            update_fields[f"progress.{question_id}.confidence"] = conf_val
+            message = f"🟢 Confidence level updated to {conf_val}!"
+        else:
+            update_fields[f"progress.{question_id}.confidence"] = ""
+            message = "⚪ Confidence level cleared!"
+
+    if update_fields:
+        inc_fields = {
+            field: update_fields.pop(field)
+            for field in list(update_fields)
+            if field.startswith("in_sheet_platform_counts.")
+        }
+        update_doc = {}
+        if update_fields:
+            update_doc["$set"] = update_fields
+        if inc_fields:
+            update_doc["$inc"] = inc_fields
             
-    if 'skipped' in data:
-        progress[q_str]['skipped'] = data['skipped']
-        if data['skipped']:
-            progress[q_str]['done'] = False  # If skipped, it can't be done
+        db.user.update_one({"_id": user_id}, update_doc)
+        current_user.reload()
+        pre = current_app.config.get("_PRECOMPUTED")
+        total_questions = (pre["total_questions"] if pre else db.question.count_documents({}))
+        update_computed_stats(user_id, current_user.progress, db, total_questions)
+        invalidate_leaderboard_cache()
+        warm_public_card_cache(user_id, db_handle=db)
+        
+        # 🤝 FE & LINTER PERFECT SYNC: Construct dynamic payload inside native wrapper
+        response_obj = json_success(message=message)
+        response_data = response_obj.get_json() or {}
+        response_data.update({
+            "status": "success",
+            "confidence": current_user.progress.get(question_id, {}).get("confidence", "")
+        })
+        return jsonify(response_data), 200
 
-    # Update other optional attributes safely
-    if 'bookmark' in data:
-        progress[q_str]['bookmark'] = data['bookmark']
-    if 'notes' in data:
-        progress[q_str]['notes'] = data['notes']
-    if 'confidence' in data:
-        confidence_level = str(data['confidence']).strip().lower()
-        progress[q_str]['confidence'] = confidence_level if confidence_level in ['low', 'medium', 'high'] else ''
-
-    # Persist the clean legacy dictionary wrapper structure back to Mongo
-    db.user.update_one({"_id": user_id}, {"$set": {"progress": progress}})
-
-    return jsonify({
-        "success": True,
-        "status": "success",
-        "message": "Question updated successfully",
-        "confidence": progress[q_str].get("confidence", "")
-    }), 200
+    return json_success(message="No changes made")
 
 
 @tracker_bp.route("/bookmarks")
