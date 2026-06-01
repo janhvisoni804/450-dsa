@@ -1,6 +1,6 @@
 from bson import ObjectId
 from bson.errors import InvalidId
-from flask import Blueprint, Response, current_app, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request,make_response
 from flask_login import current_user, login_required
 
 from app.extensions import db
@@ -191,6 +191,61 @@ def export_topic_notes(topic_id):
 @tracker_bp.route("/update_question/<question_id>", methods=["POST"])
 @login_required
 def update_question(question_id):
+    """Update the authenticated user's saved progress for one question.
+    ---
+    tags:
+      - Tracker
+    parameters:
+      - name: question_id
+        in: path
+        type: string
+        required: true
+        description: MongoDB ObjectId of the question to update.
+      - name: body
+        in: body
+        required: true
+        schema:
+          type: object
+          properties:
+            done:
+              type: boolean
+              description: Whether the question is completed.
+            bookmark:
+              type: boolean
+              description: Whether the question is bookmarked.
+            skipped:
+              type: boolean
+              description: Whether the question is postponed for later review.
+            notes:
+              type: string
+              description: User notes for the question.
+    security:
+      - SessionAuth: []
+    responses:
+      200:
+        description: Question progress updated successfully.
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+              example: true
+      401:
+        description: Login required.
+      400:
+        description: Invalid JSON payload.
+      404:
+        description: Question not found.
+        schema:
+          type: object
+          properties:
+            success:
+              type: boolean
+              example: false
+            error:
+              type: string
+              example: Question not found
+    """
     try:
         question_id_obj = ObjectId(question_id)
     except InvalidId:
@@ -247,17 +302,7 @@ def update_question(question_id):
         update_fields[f"progress.{question_id}.notes"] = data["notes"]
         message = f"📝 Notes saved for '{question.get('problem', 'Question')}'!"
 
-    # 🟢 LAYERED EXTRA FEATURE: Confidence evaluation framework
-    if "confidence" in data:
-        conf_val = str(data["confidence"]).strip().lower()
-        if conf_val in ["low", "medium", "high"]:
-            update_fields[f"progress.{question_id}.confidence"] = conf_val
-            message = f"🟢 Confidence level updated to {conf_val}!"
-        else:
-            update_fields[f"progress.{question_id}.confidence"] = ""
-            message = "⚪ Confidence level cleared!"
-
-    # 🟢 LAYERED EXTRA FEATURE: Safely inject confidence string data into MongoDB $set operation
+    # 🟢 LAYERED EXTRA FEATURE: Confidence evaluation tracking safely added
     if "confidence" in data:
         conf_val = str(data["confidence"]).strip().lower()
         if conf_val in ["low", "medium", "high"]:
@@ -278,7 +323,6 @@ def update_question(question_id):
             update_doc["$set"] = update_fields
         if inc_fields:
             update_doc["$inc"] = inc_fields
-            
         db.user.update_one({"_id": user_id}, update_doc)
         current_user.reload()
         pre = current_app.config.get("_PRECOMPUTED")
@@ -287,14 +331,14 @@ def update_question(question_id):
         invalidate_leaderboard_cache()
         warm_public_card_cache(user_id, db_handle=db)
         
-        # 🤝 FE & LINTER PERFECT SYNC: Construct dynamic payload inside native wrapper
-        response_obj = json_success(message=message)
-        response_data = response_obj.get_json() or {}
-        response_data.update({
+        # 🟢 FIXES TUPLE BLOCKER: Build a native Flask Response object directly with the custom parameters
+        res = make_response(jsonify({
+            "success": True, 
+            "message": message, 
             "status": "success",
             "confidence": current_user.progress.get(question_id, {}).get("confidence", "")
-        })
-        return jsonify(response_data), 200
+        }), 200)
+        return res
 
     return json_success(message="No changes made")
 
