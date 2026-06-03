@@ -404,3 +404,21 @@ def test_clear_confidence_level_success(monkeypatch):
     
     user = test_db.user.find_one({"_id": user_id})
     assert user["progress"][str(question_id)]["confidence"] == ""
+
+def test_update_question_invalid_confidence_failed(monkeypatch):
+    """Test that an invalid confidence value explicitly returns a 400 Bad Request."""
+    flask_app, test_db = build_test_app(monkeypatch, extra_db_targets=(tracker_routes,))
+    question_id = test_db.question.insert_one({"problem": "Invalid Confidence Track"}).inserted_id
+
+    with flask_app.test_client() as client:
+        login_test_user(client, test_db)
+        response = client.post(
+            f"/update_question/{question_id}", 
+            json={"confidence": "invalid_garbage_value"}, 
+            headers=csrf_headers(client)
+        )
+
+    assert response.status_code == 400
+    data = response.get_json()
+    assert data["success"] is False
+    assert "Invalid confidence level" in data["error"]

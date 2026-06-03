@@ -302,15 +302,17 @@ def update_question(question_id):
         update_fields[f"progress.{question_id}.notes"] = data["notes"]
         message = f"📝 Notes saved for '{question.get('problem', 'Question')}'!"
 
-    # 🟢 LAYERED EXTRA FEATURE: Confidence evaluation tracking safely added
+    # 🟢 LAYERED EXTRA FEATURE: Explicit validation for confidence levels (Fixes Behavior Blocker)
     if "confidence" in data:
         conf_val = str(data["confidence"]).strip().lower()
         if conf_val in ["low", "medium", "high"]:
             update_fields[f"progress.{question_id}.confidence"] = conf_val
             message = f"🟢 Confidence level updated to {conf_val}!"
-        else:
+        elif conf_val == "":
             update_fields[f"progress.{question_id}.confidence"] = ""
             message = "⚪ Confidence level cleared!"
+        else:
+            return jsonify({"success": False, "error": "Invalid confidence level. Must be 'low', 'medium', 'high', or empty string"}), 400
 
     if update_fields:
         inc_fields = {
