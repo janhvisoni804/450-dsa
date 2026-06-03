@@ -24,6 +24,7 @@ from app.security import (
 )
 from app.search import search_bp
 from app.tracker import tracker_bp
+from app.cohort.routes import cohort_bp
 from app.utils import (
     platform_color_filter,
     platform_name_filter,
@@ -161,6 +162,9 @@ def create_app(config_class=None):
         _dedupe_seeded_questions()
         db.question.create_index([("topic", 1), ("problem", 1), ("url", 1)], unique=True)
         db.question.create_index([("problem", "text")], name="problem_text")
+        db.cohort.create_index("join_code", unique=True)
+        db.cohort_membership.create_index([("cohort_id", 1), ("user_id", 1)], unique=True)
+        db.cohort_membership.create_index("user_id")
         
         # Lightweight schema backfill for legacy user documents.
         db.user.update_many({"is_admin": {"$exists": False}}, {"$set": {"is_admin": False}})
@@ -340,10 +344,14 @@ def create_app(config_class=None):
     app.register_blueprint(search_bp)
     app.register_blueprint(admin_bp)
     app.register_blueprint(public_bp)
+    app.register_blueprint(cohort_bp)
 
     @app.errorhandler(429)
     def ratelimit_handler(e):
-        retry_after = getattr(e, 'retry_after', 60)
+        retry_after = getattr(e, 'retry_after', None)
+        if retry_after in (None, "", "None"):
+            retry_after = 60
+        from flask import jsonify
         response = jsonify({
             'error': 'Too many requests',
             'message': str(e.description),
@@ -376,3 +384,7 @@ def create_app(config_class=None):
 
 
     return app
+
+
+# GSSoC Flask Global Error Handler registration
+# Catch 404, 500, and rate-limit HTTP exceptions cleanly.

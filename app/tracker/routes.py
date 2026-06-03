@@ -116,9 +116,9 @@ def topic(topic_id):
     questions = list(db.question.find({"topic": topic_doc["_id"]}, TOPIC_PAGE_QUESTION_PROJECTION))
     for question in questions:
         question["editorial_links"] = question_editorial_links(question)
-        
+
     progress_dict = current_user.progress if (current_user.is_authenticated and isinstance(current_user.progress, dict)) else {}
-    
+
     # Calculate counts based on the unfiltered list of questions
     total_count = len(questions)
     easy_count = sum(1 for q in questions if q.get('difficulty', 'Medium') == 'Easy')
@@ -127,11 +127,11 @@ def topic(topic_id):
     done_count = sum(1 for q in questions if progress_dict.get(str(q["_id"]), {}).get("done"))
     skipped_count = sum(1 for q in questions if progress_dict.get(str(q["_id"]), {}).get("skipped"))
     todo_count = total_count - done_count - skipped_count
-    
+
     # Get difficulty filter from query parameter
     difficulty_filter = normalize_difficulty_filter(request.args.get('difficulty', 'all'))
     status_filter = request.args.get('status', 'all')
-    
+
     if difficulty_filter != 'all':
         questions = [q for q in questions if q.get('difficulty', 'Medium') == difficulty_filter]
 
@@ -151,11 +151,11 @@ def topic(topic_id):
         active_filters.append(f"{difficulty_filter} difficulty")
     if status_filter != 'all':
         active_filters.append(f"{status_filter.capitalize()} status")
-    
+
     return render_template(
-        "topic.html", 
-        topic=topic_doc, 
-        questions=questions, 
+        "topic.html",
+        topic=topic_doc,
+        questions=questions,
         progress_dict=progress_dict,
         difficulty_filter=difficulty_filter,
         status_filter=status_filter,
@@ -186,6 +186,40 @@ def export_topic_notes(topic_id):
     response = Response(markdown, mimetype="text/markdown")
     response.headers["Content-Disposition"] = f'attachment; filename={topic_notes_filename(topic_doc["name"])}'
     return response
+
+
+@tracker_bp.route("/topic/<topic_id>/reset-progress", methods=["POST"])
+@login_required
+def reset_topic_progress(topic_id):
+    try:
+        topic_id_obj = ObjectId(topic_id)
+    except InvalidId:
+        return json_error("Topic not found", status_code=404)
+
+    topic_doc = db.topic.find_one({"_id": topic_id_obj})
+    if not topic_doc:
+        return json_error("Topic not found", status_code=404)
+
+    topic_question_ids = [str(question["_id"]) for question in db.question.find({"topic": topic_doc["_id"]}, {"_id": 1})]
+    if topic_question_ids:
+        unset_fields = {}
+        for question_id in topic_question_ids:
+            unset_fields[f"progress.{question_id}.done"] = ""
+            unset_fields[f"progress.{question_id}.skipped"] = ""
+            unset_fields[f"progress.{question_id}.timestamp"] = ""
+
+        db.user.update_one({"_id": current_user.id}, {"$unset": unset_fields})
+        current_user.reload()
+
+        solved_items = {question_id: progress for question_id, progress in current_user.progress.items() if progress.get("done")}
+        all_questions = list(db.question.find({}, {"_id": 1, "url": 1}))
+        in_sheet_platform_counts = compute_in_sheet_platform_counts(solved_items, all_questions)
+        db.user.update_one({"_id": current_user.id}, {"$set": {"in_sheet_platform_counts": in_sheet_platform_counts}})
+        current_user.reload()
+
+    invalidate_leaderboard_cache()
+    warm_public_card_cache(current_user.id, db_handle=db)
+    return json_success(message=f"Reset progress for '{topic_doc.get('name', 'this topic')}'")
 
 
 @tracker_bp.route("/update_question/<question_id>", methods=["POST"])
@@ -290,14 +324,14 @@ def update_question(question_id):
         elif not data["skipped"] and existing.get("skipped"):
             message = f"↩️ Removed skipped status for '{question.get('problem', 'Question')}'"
         update_fields[f"progress.{question_id}.skipped"] = data["skipped"]
-    
+
     if "bookmark" in data:
         if data["bookmark"] and not existing.get("bookmark"):
             message = f"🔖 Added '{question.get('problem', 'Question')}' to bookmarks!"
         elif not data["bookmark"] and existing.get("bookmark"):
             message = f"📌 Removed '{question.get('problem', 'Question')}' from bookmarks"
         update_fields[f"progress.{question_id}.bookmark"] = data["bookmark"]
-    
+
     if "notes" in data:
         update_fields[f"progress.{question_id}.notes"] = data["notes"]
         message = f"📝 Notes saved for '{question.get('problem', 'Question')}'!"
@@ -315,28 +349,25 @@ def update_question(question_id):
             return jsonify({"success": False, "error": "Invalid confidence level. Must be 'low', 'medium', 'high', or empty string"}), 400
 
     if update_fields:
-        inc_fields = {
-            field: update_fields.pop(field)
-            for field in list(update_fields)
-            if field.startswith("in_sheet_platform_counts.")
-        }
+        for field in list(update_fields):
+            if field.startswith("in_sheet_platform_counts."):
+                del update_fields[field]
         update_doc = {}
         if update_fields:
             update_doc["$set"] = update_fields
-        if inc_fields:
-            update_doc["$inc"] = inc_fields
-        db.user.update_one({"_id": user_id}, update_doc)
+        if update_doc:
+            db.user.update_one({"_id": user_id}, update_doc)
         current_user.reload()
         pre = current_app.config.get("_PRECOMPUTED")
         total_questions = (pre["total_questions"] if pre else db.question.count_documents({}))
         update_computed_stats(user_id, current_user.progress, db, total_questions)
         invalidate_leaderboard_cache()
         warm_public_card_cache(user_id, db_handle=db)
-        
+
         # 🟢 FIXES TUPLE BLOCKER: Build a native Flask Response object directly with the custom parameters
         res = make_response(jsonify({
-            "success": True, 
-            "message": message, 
+            "success": True,
+            "message": message,
             "status": "success",
             "confidence": current_user.progress.get(question_id, {}).get("confidence", "")
         }), 200)
@@ -443,12 +474,17 @@ def export_all_notes():
 @tracker_bp.route("/export/json")
 @login_required
 def export_json():
-    questions = list(db.question.find({}, CSV_EXPORT_QUESTION_PROJECTION))
-    topic_ids = list({q.get('topic') for q in questions if q.get('topic')})
-    topic_lookup = {
-        topic['_id']: topic.get('name', 'Unknown')
-        for topic in db.topic.find({'_id': {'$in': topic_ids}}, {'name': 1})
-    }
+    pre = current_app.config.get("_PRECOMPUTED")
+    if pre:
+        questions = pre["all_questions"]
+        topic_lookup = {tid: t["name"] for tid, t in pre["topic_lookup"].items()}
+    else:
+        questions = list(db.question.find({}, CSV_EXPORT_QUESTION_PROJECTION))
+        topic_ids = list({q.get('topic') for q in questions if q.get('topic')})
+        topic_lookup = {
+            topic['_id']: topic.get('name', 'Unknown')
+            for topic in db.topic.find({'_id': {'$in': topic_ids}}, {'name': 1})
+        }
 
     progress = current_user.progress
     exported_progress = []
@@ -508,7 +544,8 @@ def import_preview():
     if err:
         return jsonify({"success": False, "error": err}), 400
 
-    questions = list(db.question.find({}, CSV_EXPORT_QUESTION_PROJECTION))
+    pre = current_app.config.get("_PRECOMPUTED")
+    questions = pre["all_questions"] if pre else list(db.question.find({}, CSV_EXPORT_QUESTION_PROJECTION))
     summary, changes, conflicts, _ = process_dry_run(parsed_items, questions, current_user.progress)
 
     return jsonify({
@@ -550,7 +587,8 @@ def import_commit():
     if err:
         return jsonify({"success": False, "error": err}), 400
 
-    questions = list(db.question.find({}, CSV_EXPORT_QUESTION_PROJECTION))
+    pre = current_app.config.get("_PRECOMPUTED")
+    questions = pre["all_questions"] if pre else list(db.question.find({}, CSV_EXPORT_QUESTION_PROJECTION))
     _, _, _, mapped_progress = process_dry_run(parsed_items, questions, current_user.progress)
 
     user_id = current_user.id
@@ -589,8 +627,12 @@ def import_commit():
                 "timestamp": timestamp
             }
     else:
+        # Replace mode should overwrite only the mapped/imported questions while
+        # preserving any existing progress entries that were not present (or not matched)
+        # in the import file.
+        new_progress = dict(current_db_progress)
         for q_id, imp_val in mapped_progress.items():
-            existing = current_db_progress.get(q_id, {})
+            existing = new_progress.get(q_id, {})
             timestamp = existing.get("timestamp")
             if imp_val["done"] and not existing.get("done"):
                 timestamp = utc_now()
@@ -621,5 +663,10 @@ def import_commit():
     current_user.reload()
     invalidate_leaderboard_cache()
     warm_public_card_cache(user_id, db_handle=db)
+
+    pre = current_app.config.get("_PRECOMPUTED")
+    total_questions = (pre["total_questions"] if pre
+                       else db.question.count_documents({}))
+    update_computed_stats(user_id, new_progress, db, total_questions)
 
     return jsonify({"success": True, "message": "Progress imported successfully!"})

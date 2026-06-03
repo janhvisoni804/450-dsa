@@ -19,6 +19,8 @@
 .topic-header-main { min-width: 0; }
 .export-notes-btn { display: inline-flex; align-items: center; gap: 7px; padding: 8px 14px; border: 1px solid var(--border-color); border-radius: 8px; background: var(--bg-secondary); color: var(--text-secondary); font-size: 0.82rem; font-weight: 700; text-decoration: none; white-space: nowrap; transition: all 0.2s; }
 .export-notes-btn:hover { border-color: var(--accent); color: var(--accent); text-decoration: none; }
+.reset-progress-btn { color: var(--danger); }
+.reset-progress-btn:hover { border-color: var(--danger); color: var(--danger); }
 
 .bookmark-btn { color: var(--text-muted); }
 .bookmark-btn:hover { color: var(--accent); }
@@ -86,9 +88,14 @@
         </div>
     </div>
     {% if current_user.is_authenticated %}
-    <a href="{{ url_for('tracker.export_topic_notes', topic_id=topic._id|string) }}" class="export-notes-btn" aria-label="Export notes for this topic">
-        <i class="bi bi-download" aria-hidden="true"></i> Export Notes
-    </a>
+    <div style="display:flex; gap:10px; flex-wrap:wrap; justify-content:flex-end;">
+        <a href="{{ url_for('tracker.export_topic_notes', topic_id=topic._id|string) }}" class="export-notes-btn" aria-label="Export notes for this topic">
+            <i class="bi bi-download" aria-hidden="true"></i> Export Notes
+        </a>
+        <button type="button" class="export-notes-btn reset-progress-btn" id="resetTopicProgressBtn" aria-label="Reset progress for this topic">
+            <i class="bi bi-arrow-counterclockwise" aria-hidden="true"></i> Reset Progress
+        </button>
+    </div>
     {% endif %}
 </div>
 
@@ -155,7 +162,7 @@
                         data-id="{{ q_id_str }}"
                         aria-label="Mark '{{ q.problem }}' as {% if p and p.done %}incomplete{% else %}complete{% endif %}"
                         {% if p and p.done %}checked{% endif %}>
-                    
+
                     <div class="btn-group ms-2">
                         <button type="button" class="dropdown-toggle confidence-dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" id="conf-btn-{{ q_id_str }}">
                             {% if p and p.confidence == 'high' %}
@@ -262,6 +269,7 @@
 <script>
 const endpointConfig = {{ {
   "updateQuestionBase": url_for('tracker.update_question', question_id='__QUESTION_ID__'),
+    "resetTopicProgress": url_for('tracker.reset_topic_progress', topic_id=topic._id|string),
 }|tojson }};
 const csrfToken = {{ csrf_token()|tojson }};
 const isAuthenticated = {{ 'true' if current_user.is_authenticated else 'false' }};
@@ -377,7 +385,7 @@ function updateQuestion(id, data, callback) {
         if (!r.ok) throw new Error('Request failed');
         return r.json();
     }).then(res => {
-        if (res.status === 'success' || res.confidence !== undefined) res.success = true; 
+        if (res.status === 'success' || res.confidence !== undefined) res.success = true;
         if (!res.success) throw new Error(res.error || 'Update failed');
         if (callback) callback(res);
         return res;
@@ -393,20 +401,20 @@ if (navigator.onLine) flushQueue();
 // Checkbox handler
 document.querySelectorAll('.status-checkbox').forEach(cb => {
     cb.addEventListener('change', function() {
-        if (!isAuthenticated) { 
-            this.checked = !this.checked; 
-            window.location.href = "{{ url_for('auth.login') }}"; 
-            return; 
+        if (!isAuthenticated) {
+            this.checked = !this.checked;
+            window.location.href = "{{ url_for('auth.login') }}";
+            return;
         }
         const row = document.getElementById('row-' + this.dataset.id);
         const previousChecked = !this.checked;
         const nextChecked = this.checked;
         this.disabled = true;
         row.classList.add('row-updating');
-        
+
         const problemName = row.querySelector('.q-name')?.textContent || 'Question';
         this.setAttribute('aria-label', nextChecked ? `Mark '${problemName}' as incomplete` : `Mark '${problemName}' as complete`);
-        
+
         row.classList.toggle('row-done', nextChecked);
         updateQuestion(this.dataset.id, {done: nextChecked})
             .catch(() => {
@@ -425,9 +433,9 @@ document.querySelectorAll('.status-checkbox').forEach(cb => {
 document.querySelectorAll('.confidence-select').forEach(item => {
     item.addEventListener('click', function(e) {
         e.preventDefault();
-        if (!isAuthenticated) { 
-            window.location.href = "{{ url_for('auth.login') }}"; 
-            return; 
+        if (!isAuthenticated) {
+            window.location.href = "{{ url_for('auth.login') }}";
+            return;
         }
         const questionId = this.getAttribute('data-question-id');
         const level = this.getAttribute('data-level');
@@ -461,9 +469,9 @@ function setSkippedState(btn, isSkipped) {
 
 document.querySelectorAll('.bookmark-btn').forEach(btn => {
     btn.addEventListener('click', function() {
-        if (!isAuthenticated) { 
-            window.location.href = "{{ url_for('auth.login') }}"; 
-            return; 
+        if (!isAuthenticated) {
+            window.location.href = "{{ url_for('auth.login') }}";
+            return;
         }
         const isBookmarked = this.dataset.bookmarked === 'true';
         const newStatus = !isBookmarked;
@@ -620,14 +628,14 @@ document.getElementById('practiceRandomBtn').addEventListener('click', function(
     this.setAttribute('aria-busy', 'true');
     const rows = Array.from(document.querySelectorAll('#questions-table tbody tr:not(#empty-state-row)'))
         .filter(row => row.style.display !== 'none');
-    
+
     if (rows.length === 0) {
         this.classList.remove('btn-busy');
         this.removeAttribute('aria-busy');
         alert('No questions available!');
         return;
     }
-    
+
     const randomRow = rows[Math.floor(Math.random() * rows.length)];
     randomRow.scrollIntoView({ behavior: 'smooth', block: 'center' });
     randomRow.style.outline = '2px solid var(--accent)';
