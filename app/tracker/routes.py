@@ -284,6 +284,7 @@ def update_question(question_id):
         question_id_obj = ObjectId(question_id)
     except InvalidId:
         return json_error("Question not found", status_code=404)
+
     question = db.question.find_one({"_id": question_id_obj}, QUESTION_STATUS_PROJECTION)
     if not question:
         return json_error("Question not found", status_code=404)
@@ -298,10 +299,13 @@ def update_question(question_id):
 
     user_id = current_user.id
     update_fields = {}
-    progress = current_user.progress
+    progress = getattr(current_user, 'progress', {}) or {}
     existing = progress.get(question_id, {})
     message = ""
-    platform_count_field = f"in_sheet_platform_counts.{platform_from_question_url(question.get('url'))}"
+
+    # Platform extraction sync
+    platform_name = platform_from_question_url(question.get('url')) or "LeetCode"
+    platform_count_field = f"in_sheet_platform_counts.{platform_name}"
 
     if "done" in data:
         if data["done"] and not existing.get("done"):
@@ -311,7 +315,6 @@ def update_question(question_id):
             update_fields[platform_count_field] = 1
         elif not data["done"] and existing.get("done"):
             message = f"📝 Marked '{question.get('problem', 'Question')}' as incomplete"
-        if not data["done"] and existing.get("done"):
             update_fields[platform_count_field] = -1
         update_fields[f"progress.{question_id}.done"] = data["done"]
 
@@ -336,7 +339,7 @@ def update_question(question_id):
         update_fields[f"progress.{question_id}.notes"] = data["notes"]
         message = f"📝 Notes saved for '{question.get('problem', 'Question')}'!"
 
-    # 🟢 LAYERED EXTRA FEATURE: Explicit validation for confidence levels (Fixes Behavior Blocker)
+    # 🟢 Explicit validation for confidence levels (Fixes Behavior Blocker)
     if "confidence" in data:
         conf_val = str(data["confidence"]).strip().lower()
         if conf_val in ["low", "medium", "high"]:
@@ -349,22 +352,35 @@ def update_question(question_id):
             return jsonify({"success": False, "error": "Invalid confidence level. Must be 'low', 'medium', 'high', or empty string"}), 400
 
     if update_fields:
-        for field in list(update_fields):
-            if field.startswith("in_sheet_platform_counts."):
-                del update_fields[field]
+        inc_fields = {
+            field: update_fields.pop(field)
+            for field in list(update_fields)
+            if field.startswith("in_sheet_platform_counts.")
+        }
+
+        # Safe database layout setup
+        user_doc = db.user.find_one({"_id": user_id}) or {}
+        if "in_sheet_platform_counts" not in user_doc:
+            db.user.update_one(
+                {"_id": user_id},
+                {"$set": {"in_sheet_platform_counts": {"LeetCode": 0, "CodeForces": 0, "CodeChef": 0, "GeeksforGeeks": 0}}}
+            )
+
         update_doc = {}
         if update_fields:
             update_doc["$set"] = update_fields
-        if update_doc:
-            db.user.update_one({"_id": user_id}, update_doc)
+        if inc_fields:
+            update_doc["$inc"] = inc_fields
+
+        db.user.update_one({"_id": user_id}, update_doc)
         current_user.reload()
+
         pre = current_app.config.get("_PRECOMPUTED")
         total_questions = (pre["total_questions"] if pre else db.question.count_documents({}))
         update_computed_stats(user_id, current_user.progress, db, total_questions)
         invalidate_leaderboard_cache()
         warm_public_card_cache(user_id, db_handle=db)
 
-        # 🟢 FIXES TUPLE BLOCKER: Build a native Flask Response object directly with the custom parameters
         res = make_response(jsonify({
             "success": True,
             "message": message,
