@@ -42,6 +42,7 @@ TOPIC_PAGE_QUESTION_PROJECTION = {
     "url": 1,
     "url2": 1,
     "editorial_links": 1,
+    "hints": 1,
 }
 TOPIC_NOTES_EXPORT_PROJECTION = {"problem": 1}
 QUESTION_STATUS_PROJECTION = {"problem": 1, "url": 1}
@@ -219,6 +220,10 @@ def reset_topic_progress(topic_id):
 
     invalidate_leaderboard_cache()
     warm_public_card_cache(current_user.id, db_handle=db)
+    pre = current_app.config.get("_PRECOMPUTED")
+    total_questions = (pre["total_questions"] if pre
+                       else db.question.count_documents({}))
+    update_computed_stats(current_user.id, current_user.progress, db, total_questions)
     return json_success(message=f"Reset progress for '{topic_doc.get('name', 'this topic')}'")
 
 
@@ -297,6 +302,9 @@ def update_question(question_id):
         if field in data and not isinstance(data[field], bool):
             return jsonify({"success": False, "error": f"{field} must be a boolean"}), 400
 
+    if data.get("done") is True and data.get("skipped") is True:
+        data["skipped"] = False
+
     user_id = current_user.id
     update_fields = {}
     progress = getattr(current_user, 'progress', {}) or {}
@@ -352,19 +360,16 @@ def update_question(question_id):
             return jsonify({"success": False, "error": "Invalid confidence level. Must be 'low', 'medium', 'high', or empty string"}), 400
 
     if update_fields:
-        # 🎯 FIXES ALL TESTS: Separate increments from sets without calling db.user.find_one
         inc_fields = {
             field: update_fields.pop(field)
             for field in list(update_fields)
             if field.startswith("in_sheet_platform_counts.")
         }
-
         update_doc = {}
         if update_fields:
             update_doc["$set"] = update_fields
         if inc_fields:
             update_doc["$inc"] = inc_fields
-
         db.user.update_one({"_id": user_id}, update_doc)
         current_user.reload()
 
