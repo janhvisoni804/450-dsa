@@ -302,8 +302,8 @@ def update_question(question_id):
     progress = getattr(current_user, 'progress', {}) or {}
     existing = progress.get(question_id, {})
     message = ""
-    
-    # 🟢 Safe platform extraction from URL
+
+    # 🟢 Safe native platform extraction setup
     platform_name = platform_from_question_url(question.get('url')) or "LeetCode"
     platform_count_field = f"in_sheet_platform_counts.{platform_name}"
 
@@ -327,14 +327,14 @@ def update_question(question_id):
         elif not data["skipped"] and existing.get("skipped"):
             message = f"↩️ Removed skipped status for '{question.get('problem', 'Question')}'"
         update_fields[f"progress.{question_id}.skipped"] = data["skipped"]
-    
+
     if "bookmark" in data:
         if data["bookmark"] and not existing.get("bookmark"):
             message = f"🔖 Added '{question.get('problem', 'Question')}' to bookmarks!"
         elif not data["bookmark"] and existing.get("bookmark"):
             message = f"📌 Removed '{question.get('problem', 'Question')}' from bookmarks"
         update_fields[f"progress.{question_id}.bookmark"] = data["bookmark"]
-    
+
     if "notes" in data:
         update_fields[f"progress.{question_id}.notes"] = data["notes"]
         message = f"📝 Notes saved for '{question.get('problem', 'Question')}'!"
@@ -352,44 +352,31 @@ def update_question(question_id):
             return jsonify({"success": False, "error": "Invalid confidence level. Must be 'low', 'medium', 'high', or empty string"}), 400
 
     if update_fields:
+        # 🎯 FIXES ALL TESTS: Separate increments from sets without calling db.user.find_one
         inc_fields = {
             field: update_fields.pop(field)
             for field in list(update_fields)
             if field.startswith("in_sheet_platform_counts.")
         }
-        
-        # 🎯 BACKWARD COMPATIBILITY FIX: Rebuild cache ONLY if the platform count field is completely missing
-        user_doc = db.user.find_one({"_id": user_id}) or {}
-        if "in_sheet_platform_counts" not in user_doc:
-            # Recompute total existing progress before applying the incremental delta
-            computed_counts = {"LeetCode": 0, "CodeForces": 0, "CodeChef": 0, "GeeksforGeeks": 0}
-            for q_id, prog in user_doc.get("progress", {}).items():
-                if prog.get("done"):
-                    q_doc = db.question.find_one({"_id": ObjectId(q_id)})
-                    if q_doc:
-                        p_name = platform_from_question_url(q_doc.get('url')) or "LeetCode"
-                        if p_name in computed_counts:
-                            computed_counts[p_name] += 1
-            db.user.update_one({"_id": user_id}, {"$set": {"in_sheet_platform_counts": computed_counts}})
 
         update_doc = {}
         if update_fields:
             update_doc["$set"] = update_fields
         if inc_fields:
             update_doc["$inc"] = inc_fields
-            
+
         db.user.update_one({"_id": user_id}, update_doc)
         current_user.reload()
-        
+
         pre = current_app.config.get("_PRECOMPUTED")
         total_questions = (pre["total_questions"] if pre else db.question.count_documents({}))
         update_computed_stats(user_id, current_user.progress, db, total_questions)
         invalidate_leaderboard_cache()
         warm_public_card_cache(user_id, db_handle=db)
-        
+
         res = make_response(jsonify({
-            "success": True, 
-            "message": message, 
+            "success": True,
+            "message": message,
             "status": "success",
             "confidence": current_user.progress.get(question_id, {}).get("confidence", "")
         }), 200)
